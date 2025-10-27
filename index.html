@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#007bff">
+  <title>PWA通知アプリ</title>
+  <link rel="manifest" href="manifest.json">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      padding: 20px;
+      max-width: 600px;
+      margin: 0 auto;
+      background: #f5f5f5;
+    }
+    .card {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    h1 { font-size: 24px; margin-bottom: 10px; }
+    h2 { font-size: 18px; margin-bottom: 15px; color: #333; }
+    input, select {
+      width: 100%;
+      padding: 10px;
+      margin-bottom: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    button {
+      background: #007bff;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      width: 100%;
+      margin-top: 5px;
+    }
+    button:hover { background: #0056b3; }
+    button:disabled { background: #ccc; cursor: not-allowed; }
+    button.secondary { background: #6c757d; }
+    button.secondary:hover { background: #5a6268; }
+    button.danger { background: #dc3545; }
+    button.danger:hover { background: #c82333; }
+    .status {
+      padding: 10px;
+      border-radius: 4px;
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+    .status.info { background: #e3f2fd; color: #1976d2; }
+    .status.success { background: #e8f5e9; color: #388e3c; }
+    .status.error { background: #ffebee; color: #c62828; }
+    .hidden { display: none; }
+    label {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 10px 0;
+      cursor: pointer;
+    }
+    input[type="checkbox"] {
+      width: 20px;
+      height: 20px;
+      cursor: pointer;
+    }
+    .schedule-item {
+      background: #f8f9fa;
+      padding: 10px;
+      border-radius: 4px;
+      margin-bottom: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .badge-count {
+      display: inline-block;
+      background: #ff0000;
+      color: white;
+      padding: 5px 15px;
+      border-radius: 20px;
+      font-weight: bold;
+      font-size: 20px;
+      margin: 10px 0;
+    }
+    small { color: #666; display: block; margin-top: 5px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>📱 PWA通知アプリ</h1>
+    <div id="status" class="status info">準備中...</div>
+  </div>
+
+  <!-- ログイン画面 -->
+  <div id="loginSection" class="card">
+    <h2>ログイン / 新規登録</h2>
+    <input type="text" id="username" placeholder="ユーザー名 (3文字以上)">
+    <input type="password" id="password" placeholder="パスワード (6文字以上)">
+    <button onclick="login()">ログイン</button>
+    <button onclick="register()" class="secondary">新規登録</button>
+    <small>※デモ版: データはブラウザに保存されます</small>
+  </div>
+
+  <!-- メイン画面 -->
+  <div id="mainSection" class="card hidden">
+    <h2>ようこそ、<span id="currentUser"></span>さん</h2>
+    <button onclick="logout()" class="secondary">ログアウト</button>
+    
+    <!-- 通知設定 -->
+    <div style="margin-top: 20px;">
+      <h2>通知設定</h2>
+      <label>
+        <input type="checkbox" id="enableNotifications" onchange="saveSettings()">
+        <span>プッシュ通知を受け取る</span>
+      </label>
+      <label>
+        <input type="checkbox" id="enableBadge" onchange="saveSettings()">
+        <span>バッジ通知を有効にする</span>
+      </label>
+      <button onclick="requestPermission()">ブラウザ通知を許可</button>
+    </div>
+
+    <!-- バッジ表示 -->
+    <div style="margin-top: 20px;">
+      <h2>バッジカウント</h2>
+      <div class="badge-count" id="badgeDisplay">0</div>
+      <button onclick="incrementBadge()">バッジ +1</button>
+      <button onclick="clearBadge()" class="secondary">バッジをリセット</button>
+    </div>
+
+    <!-- スケジュール通知 -->
+    <div style="margin-top: 20px;">
+      <h2>スケジュール通知</h2>
+      <input type="text" id="notifTitle" placeholder="通知タイトル">
+      <input type="datetime-local" id="notifTime">
+      <button onclick="addSchedule()">通知を予約</button>
+      <div id="scheduleList" style="margin-top: 15px;"></div>
+    </div>
+
+    <!-- テスト -->
+    <div style="margin-top: 20px;">
+      <h2>動作テスト</h2>
+      <button onclick="sendTestNotification()">即座に通知を送信</button>
+    </div>
+  </div>
+
+  <script>
+    const API_URL = 'https://your-worker.workers.dev'; // 後で設定
+    let currentUser = null;
+    let badgeCount = 0;
+    let schedules = [];
+    let checkInterval = null;
+
+    // LocalStorage管理
+    const storage = {
+      getUsers: () => JSON.parse(localStorage.getItem('users') || '{}'),
+      saveUser: (username, password) => {
+        const users = storage.getUsers();
+        users[username] = { password, settings: { notifications: false, badge: false }, schedules: [] };
+        localStorage.setItem('users', JSON.stringify(users));
+      },
+      getUser: (username) => storage.getUsers()[username],
+      updateUser: (username, data) => {
+        const users = storage.getUsers();
+        users[username] = { ...users[username], ...data };
+        localStorage.setItem('users', JSON.stringify(users));
+      }
+    };
+
+    // Service Worker登録
+    if ('serviceWorker' in navigator) {
+      const swCode = `
+        self.addEventListener('push', event => {
+          const data = event.data ? event.data.json() : { title: '通知', body: 'メッセージ' };
+          event.waitUntil(
+            self.registration.showNotification(data.title, {
+              body: data.body,
+              icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y="75" font-size="75">🔔</text></svg>',
+              badge: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" fill="red"/></svg>',
+              tag: 'notification-' + Date.now()
+            })
+          );
+        });
+      `;
+      const blob = new Blob([swCode], { type: 'application/javascript' });
+      navigator.serviceWorker.register(URL.createObjectURL(blob))
+        .then(() => updateStatus('準備完了', 'success'))
+        .catch(() => updateStatus('初期化エラー', 'error'));
+    }
+
+    function updateStatus(msg, type = 'info') {
+      const el = document.getElementById('status');
+      el.textContent = msg;
+      el.className = `status ${type}`;
+    }
+
+    function register() {
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value;
+      
+      if (username.length < 3) {
+        updateStatus('ユーザー名は3文字以上', 'error');
+        return;
+      }
+      if (password.length < 6) {
+        updateStatus('パスワードは6文字以上', 'error');
+        return;
+      }
+      if (storage.getUser(username)) {
+        updateStatus('既に登録済みのユーザー名です', 'error');
+        return;
+      }
+      
+      storage.saveUser(username, password);
+      updateStatus('登録完了！ログインしてください', 'success');
+    }
+
+    function login() {
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value;
+      const user = storage.getUser(username);
+      
+      if (!user || user.password !== password) {
+        updateStatus('ユーザー名またはパスワードが違います', 'error');
+        return;
+      }
+      
+      currentUser = username;
+      schedules = user.schedules || [];
+      badgeCount = user.badgeCount || 0;
+      
+      document.getElementById('currentUser').textContent = username;
+      document.getElementById('loginSection').classList.add('hidden');
+      document.getElementById('mainSection').classList.remove('hidden');
+      document.getElementById('enableNotifications').checked = user.settings.notifications;
+      document.getElementById('enableBadge').checked = user.settings.badge;
+      
+      updateStatus('ログイン成功', 'success');
+      updateBadgeDisplay();
+      renderSchedules();
+      startScheduleCheck();
+    }
+
+    function logout() {
+      stopScheduleCheck();
+      currentUser = null;
+      document.getElementById('loginSection').classList.remove('hidden');
+      document.getElementById('mainSection').classList.add('hidden');
+      document.getElementById('username').value = '';
+      document.getElementById('password').value = '';
+      updateStatus('ログアウトしました', 'info');
+      clearBadge();
+    }
+
+    function saveSettings() {
+      const user = storage.getUser(currentUser);
+      user.settings.notifications = document.getElementById('enableNotifications').checked;
+      user.settings.badge = document.getElementById('enableBadge').checked;
+      storage.updateUser(currentUser, user);
+      updateStatus('設定を保存しました', 'success');
+    }
+
+    async function requestPermission() {
+      if (!('Notification' in window)) {
+        updateStatus('非対応ブラウザです', 'error');
+        return;
+      }
+      const permission = await Notification.requestPermission();
+      updateStatus(permission === 'granted' ? '通知許可を取得しました' : '通知が拒否されました', permission === 'granted' ? 'success' : 'error');
+    }
+
+    function sendTestNotification() {
+      const user = storage.getUser(currentUser);
+      if (!user.settings.notifications) {
+        updateStatus('通知設定を有効にしてください', 'error');
+        return;
+      }
+      if (Notification.permission !== 'granted') {
+        updateStatus('通知許可がありません', 'error');
+        return;
+      }
+      new Notification('テスト通知', {
+        body: '通知が正常に動作しています',
+        icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y="75" font-size="75">✅</text></svg>'
+      });
+      updateStatus('テスト通知を送信しました', 'success');
+    }
+
+    async function incrementBadge() {
+      const user = storage.getUser(currentUser);
+      if (!user.settings.badge) {
+        updateStatus('バッジ設定を有効にしてください', 'error');
+        return;
+      }
+      badgeCount++;
+      user.badgeCount = badgeCount;
+      storage.updateUser(currentUser, user);
+      
+      if ('setAppBadge' in navigator) {
+        await navigator.setAppBadge(badgeCount);
+      }
+      updateBadgeDisplay();
+      updateStatus(`バッジを${badgeCount}に更新`, 'success');
+    }
+
+    async function clearBadge() {
+      badgeCount = 0;
+      if (currentUser) {
+        const user = storage.getUser(currentUser);
+        user.badgeCount = 0;
+        storage.updateUser(currentUser, user);
+      }
+      if ('clearAppBadge' in navigator) {
+        await navigator.clearAppBadge();
+      }
+      updateBadgeDisplay();
+    }
+
+    function updateBadgeDisplay() {
+      document.getElementById('badgeDisplay').textContent = badgeCount;
+    }
+
+    function addSchedule() {
+      const title = document.getElementById('notifTitle').value.trim();
+      const time = document.getElementById('notifTime').value;
+      
+      if (!title || !time) {
+        updateStatus('タイトルと時刻を入力してください', 'error');
+        return;
+      }
+      
+      const schedule = { id: Date.now(), title, time, sent: false };
+      schedules.push(schedule);
+      
+      const user = storage.getUser(currentUser);
+      user.schedules = schedules;
+      storage.updateUser(currentUser, user);
+      
+      document.getElementById('notifTitle').value = '';
+      document.getElementById('notifTime').value = '';
+      
+      renderSchedules();
+      updateStatus('通知を予約しました', 'success');
+    }
+
+    function deleteSchedule(id) {
+      schedules = schedules.filter(s => s.id !== id);
+      const user = storage.getUser(currentUser);
+      user.schedules = schedules;
+      storage.updateUser(currentUser, user);
+      renderSchedules();
+      updateStatus('削除しました', 'success');
+    }
+
+    function renderSchedules() {
+      const list = document.getElementById('scheduleList');
+      if (schedules.length === 0) {
+        list.innerHTML = '<small>予約された通知はありません</small>';
+        return;
+      }
+      list.innerHTML = schedules.map(s => `
+        <div class="schedule-item">
+          <div>
+            <strong>${s.title}</strong><br>
+            <small>${new Date(s.time).toLocaleString('ja-JP')} ${s.sent ? '(送信済み)' : ''}</small>
+          </div>
+          <button onclick="deleteSchedule(${s.id})" class="danger" style="width:auto;padding:5px 10px;">削除</button>
+        </div>
+      `).join('');
+    }
+
+    function startScheduleCheck() {
+      checkInterval = setInterval(() => {
+        const now = new Date().getTime();
+        schedules.forEach(s => {
+          if (!s.sent && new Date(s.time).getTime() <= now) {
+            sendScheduledNotification(s);
+            s.sent = true;
+          }
+        });
+        const user = storage.getUser(currentUser);
+        user.schedules = schedules;
+        storage.updateUser(currentUser, user);
+        renderSchedules();
+      }, 10000); // 10秒ごとにチェック
+    }
+
+    function stopScheduleCheck() {
+      if (checkInterval) clearInterval(checkInterval);
+    }
+
+    function sendScheduledNotification(schedule) {
+      const user = storage.getUser(currentUser);
+      if (!user.settings.notifications || Notification.permission !== 'granted') return;
+      
+      new Notification(schedule.title, {
+        body: '予約された通知です',
+        icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y="75" font-size="75">⏰</text></svg>'
+      });
+      
+      if (user.settings.badge) {
+        incrementBadge();
+      }
+    }
+
+    updateStatus('ログインまたは新規登録してください', 'info');
+  </script>
+</body>
+</html>
